@@ -1555,7 +1555,7 @@ for (cellsize in cell_sizes){
       perimeter <- as.numeric(st_length(st_boundary(detected_cluster)))
       if(perimeter < 1e-6) {
         SSI <- NA
-        cat("Perimeter too small for category", cat, "- SSI_shape set to NA.\n")
+        cat("Perimeter too small for category", cat, "- SSI set to NA.\n")
       } else {
         SSI <- 1 - (2 * sqrt(pi * detected_area)) / perimeter
       }
@@ -1716,7 +1716,7 @@ for (cellsize in cell_sizes){
       perimeter <- as.numeric(st_length(st_boundary(detected_cluster)))
       if(perimeter < 1e-6) {
         SSI <- NA
-        cat("Perimeter too small for category", cat, "- SSI_shape set to NA.\n")
+        cat("Perimeter too small for category", cat, "- SSI set to NA.\n")
       } else {
         SSI <- 1 - (2 * sqrt(pi * detected_area)) / perimeter
       }
