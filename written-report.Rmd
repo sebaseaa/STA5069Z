@@ -536,7 +536,7 @@ ggplot(dow_counts, aes(x = DAY_OF_WEEK, y = count, fill = DAY_OF_WEEK)) +
     x = "Day of Week",
     y = "Count of Crimes"
   ) +
-  theme_minimal() +
+  theme_minimal() 
 
 # summarize by MONTH and crime_category
 month_counts <- df %>% group_by(MONTH, crime_category) %>% summarize(count = n(), .groups = "drop")
@@ -713,7 +713,7 @@ for(minpts in minpts_vals){
     # reproject for plotting
     df_cat_latlon <- st_transform(df_cat, crs = 4326) %>%  mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
     
-    # removenoise
+    # remove noise
     df_no_noise <- df_cat_latlon %>% filter(cluster != 0)
     
     # plot
