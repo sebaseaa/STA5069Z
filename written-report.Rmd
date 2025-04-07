@@ -28,7 +28,7 @@ library(ggplot2)
 library(leaflet)
 library(spdep)
 
-data <- read.csv("crimes.csv")
+data <- read.csv("Boston Crime Dataset (updated July 2020).csv")
 str(data)
 ```
 
