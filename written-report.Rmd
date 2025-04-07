@@ -1,0 +1,1779 @@
+---title: "STA5069Z - Project"
+output: html_document
+date: "2025-03-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+rm(list = ls())
+gc()
+```
+
+
+### EDA
+
+#### Check basic statistics
+
+```{r}
+library(dplyr)
+library(GGally)
+library(psych)
+library(sf)
+library(dbscan)
+library(ggplot2)
+library(leaflet)
+library(spdep)
+
+data <- read.csv("crimes.csv")
+str(data)
+```
+
+```{r}
+summary(data[sapply(data, is.numeric)])
+```
+
+```{r}
+colSums(is.na(data))
+```
+
+
+##### Plot the variables
+
+```{r}
+ggplot(data, aes(x = HOUR)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution of Crimes by Hour",
+    x = "Hour of Day (0–23)",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal()
+
+# make as a factor
+data$DAY_OF_WEEK <- factor(data$DAY_OF_WEEK, levels = c("Monday","Tuesday","Wednesday", "Thursday","Friday","Saturday","Sunday"))
+
+ggplot(data, aes(x = DAY_OF_WEEK)) +
+  geom_bar(fill = "darkgreen") +
+  labs(
+    title = "Distribution of Crimes by Day of Week",
+    x = "Day of Week",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal()
+
+ggplot(data, aes(x = factor(MONTH))) +
+  geom_bar(fill = "red") +
+  labs(
+    title = "Distribution of Crimes by Month",
+    x = "Month",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal()
+
+ggplot(data, aes(x = factor(YEAR))) +
+  geom_bar(fill = "purple") +
+  labs(
+    title = "Distribution of Crimes by Year",
+    x = "Year",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal()
+```
+
+
+
+```{r}
+ggplot(data, aes(x = DISTRICT)) +
+  geom_bar(fill = "orange") +
+  labs(
+    title = "Distribution of Crimes by District",
+    x = "District",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal() 
+```
+
+
+```{r}
+shooting_data <- data %>% filter(SHOOTING == "1")
+
+ggplot(shooting_data, aes(x = HOUR)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  labs(
+    title = "Shootings by Hour of the Day",
+    x = "Hour",
+    y = "Count of Shootings"
+  ) +
+  theme_minimal()
+
+shooting_data$DAY_OF_WEEK <- factor(shooting_data$DAY_OF_WEEK,
+  levels = c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
+)
+
+ggplot(shooting_data, aes(x = DAY_OF_WEEK)) +
+  geom_bar(fill = "darkgreen") +
+  labs(
+    title = "Shootings by Day of the Week",
+    x = "Day of the Week",
+    y = "Count of Shootings"
+  ) +
+  theme_minimal()
+
+ggplot(shooting_data, aes(x = factor(MONTH))) +
+  geom_bar(fill = "darkgreen") +
+  labs(
+    title = "Shootings by Day of the Week",
+    x = "Month",
+    y = "Count of Shootings"
+  ) +
+  theme_minimal()
+
+
+# map for shooting data
+m <- leaflet(data = shooting_data) %>% 
+  addTiles() %>% 
+  setView(lng = -71.0589, lat = 42.3601, zoom = 12) %>% 
+  addCircleMarkers(
+    lng = ~Long, 
+    lat = ~Lat,
+    radius = 3,           
+    color = "red",
+    fillOpacity = 0.7,
+    popup = ~paste("<b>Crime:</b>", OFFENSE_DESCRIPTION)
+  )
+
+m
+```
+
+
+```{r}
+data %>% count(DISTRICT, sort = TRUE) 
+```
+
+
+```{r}
+# create a mapping for each district
+# needed since the file of neighborhoods uses names and not "A1", "A15" and so on
+district_to_neighborhood <- tibble::tribble(
+  ~DISTRICT, ~neighborhood,
+  "A1",      "Downtown",
+  "A15",     "Charlestown",
+  "B2",      "Roxbury",
+  "B3",      "Mattapan",
+  "C6",      "South Boston",
+  "C11",     "Dorchester",
+  "D4",      "South End",
+  "D14",     "Brighton",
+  "E13",     "Jamaica Plain",
+  "E18",     "Hyde Park",
+  "E5",      "West Roxbury",
+  "A7",      "East Boston"
+)
+
+# read file and transform for plotting with leaflet
+boston_neighborhoods <- st_read("boston_neighborhood_boundaries_approximated_by_2020_census_tracts.json")
+boston_neighborhoods <- st_transform(boston_neighborhoods, crs = 4326)
+
+# count number of shootings per district
+df_counts_shootings <- data %>% filter(SHOOTING == "1") %>% group_by(DISTRICT) %>% summarize(shooting_count = n(), .groups = "drop") %>%
+  mutate(DISTRICT = as.character(DISTRICT))
+
+# merge data
+df_counts_shootings2 <- left_join(district_to_neighborhood, df_counts_shootings, by = "DISTRICT")
+boston_map_data_shootings <- left_join(boston_neighborhoods, df_counts_shootings2, by = "neighborhood")
+
+# replace any NAs
+boston_map_data_shootings$shooting_count[is.na(boston_map_data_shootings$shooting_count)] <- 0
+
+# for plotting
+pal_shootings <- colorNumeric(palette = "Reds", domain = boston_map_data_shootings$shooting_count)
+
+# centroids for labels
+centroids <- boston_map_data_shootings %>% st_centroid() %>% mutate(lng = st_coordinates(.)[,1], lat = st_coordinates(.)[,2])
+
+# plot
+leaflet(boston_map_data_shootings) %>%
+  addTiles() %>%
+  setView(lng = -71.0589, lat = 42.3601, zoom = 12) %>%
+  addPolygons(
+    fillColor = ~pal_shootings(shooting_count),
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.7,
+    popup = ~paste0("<strong>", DISTRICT, "</strong><br/>", "Shootings: ", shooting_count)
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal_shootings,
+    values = ~shooting_count,
+    title = "Shootings per District",
+    opacity = 0.7
+  ) %>%
+  addLabelOnlyMarkers(
+    data = centroids,
+    lng = ~lng,
+    lat = ~lat,
+    label = ~DISTRICT,
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      direction = "center",
+      textOnly = TRUE,
+      style = list("color" = "black", "font-weight" = "bold", "font-size" = "12px")
+    )
+  )
+
+```
+
+
+```{r}
+# top 10 by district
+top10_offenses <- data %>% count(OFFENSE_DESCRIPTION, sort = TRUE) %>% slice_head(n = 10) %>% pull(OFFENSE_DESCRIPTION)
+df_top10 <- data %>%filter(OFFENSE_DESCRIPTION %in% top10_offenses)
+district_offense_counts <- df_top10 %>% group_by(DISTRICT, OFFENSE_DESCRIPTION) %>% summarise(count = n(), .groups = "drop")
+
+# plot
+ggplot(district_offense_counts, aes(x = DISTRICT, y = count, fill = OFFENSE_DESCRIPTION)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    title = "Top 10 Crime Types per District",
+    x = "District",
+    y = "Count of Crimes",
+    fill = "Offense Description"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+# count crimes per neighborhood
+df_counts <- data %>% group_by(DISTRICT) %>% summarize(crime_count = n(), .groups = "drop") %>% mutate(DISTRICT = as.character(DISTRICT))
+
+# merge datasets
+df_counts2 <- left_join(district_to_neighborhood, df_counts, by = "DISTRICT")
+boston_map_data <- left_join(boston_neighborhoods, df_counts2, by = "neighborhood")
+
+# replace any NAs
+boston_map_data$crime_count[is.na(boston_map_data$crime_count)] <- 0
+
+# for plotting
+pal <- colorNumeric(palette = "Blues", domain = boston_map_data$crime_count)
+
+# plot
+leaflet(boston_map_data) %>%
+  addTiles() %>%
+  setView(lng = -71.0589, lat = 42.3601, zoom = 12) %>%
+  addPolygons(
+    fillColor = ~pal(crime_count),
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.7,
+    popup = ~paste0("<strong>", DISTRICT, "</strong><br/>Crimes: ", crime_count)
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal,
+    values = ~crime_count,
+    title = "Crimes per District",
+    opacity = 0.7
+  ) %>%
+  addLabelOnlyMarkers(
+    data = centroids,
+    lng = ~lng,
+    lat = ~lat,
+    label = ~DISTRICT,
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      direction = "center",
+      textOnly = TRUE,
+      style = list("color" = "black", "font-weight" = "bold", "font-size" = "12px"
+    )
+  ))
+```
+
+
+```{r}
+# top 15 crimes
+top15_crimes <- data %>% count(OFFENSE_DESCRIPTION, sort = TRUE) %>% slice_head(n = 15)
+
+ggplot(top15_crimes, aes(x = reorder(OFFENSE_DESCRIPTION, n), y = n)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Top 15 Most Occurring Crimes",
+    x = "Crime Offense",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+
+
+#### Data cleaning and feature engineering
+
+
+```{r}
+# remove lat and long values that are outside expected geographic bounds
+remove_outliers <- function(lat, long) {
+  lat[lat < 30 | lat > 60] <- NA
+  long[long < -80 | long > -60] <- NA
+  return(list(Lat_clean = lat, Long_clean = long))
+}
+
+# remove
+outlier_removed <- remove_outliers(data$Lat, data$Long)
+df_clean <- data %>% mutate(Lat_clean = outlier_removed$Lat_clean, Long_clean = outlier_removed$Long_clean) %>% 
+  filter(!is.na(Lat_clean) & !is.na(Long_clean))
+
+# check
+summary(df_clean[, c("Lat_clean", "Long_clean")])
+```
+
+
+```{r}
+print(dim(df_clean))
+new <- df_clean %>% filter(!is.na(DISTRICT) & DISTRICT != "")
+df_clean <- new
+print(dim(df_clean))
+```
+
+
+```{r}
+# unique offense descriptions
+unique_offenses <- unique(df_clean$OFFENSE_DESCRIPTION)
+
+print(length(unique_offenses))
+print(dim(df_clean))
+
+unique_offenses_df <- data.frame(Unique_Offense_Descriptions = unique_offenses)
+#View(unique_offenses_df)  
+```
+
+
+```{r}
+# remove duplicates
+df_clean <- df_clean %>% distinct(Lat, Long, OCCURRED_ON_DATE, .keep_all = TRUE)
+
+cat("Original rows:", nrow(data), "\n")
+cat("Rows after removing duplicates:", nrow(df_clean), "\n")
+cat("Duplicates removed:", nrow(data) - nrow(df_clean), "\n")
+
+# fix categories
+df <- df_clean %>%
+  mutate(
+    crime_category = case_when(
+      # Violent Crimes
+      SHOOTING == "1" |
+      OFFENSE_DESCRIPTION %in% c(
+        "ASSAULT SIMPLE - BATTERY", 
+        "THREATS TO DO BODILY HARM", 
+        "ASSAULT - SIMPLE",
+        "ASSAULT - AGGRAVATED",
+        "ASSAULT - AGGRAVATED - BATTERY",
+        "MURDER, NON-NEGLIGIENT MANSLAUGHTER",
+        "ASSAULT & BATTERY",
+        "ASSAULT D/W - OTHER",
+        "ASSAULT D/W - KNIFE ON POLICE OFFICER",
+        "KIDNAPPING/CUSTODIAL KIDNAPPING",
+        "MANSLAUGHTER - VEHICLE - NEGLIGENCE",
+        "MANSLAUGHTER - NON-VEHICLE - NEGLIGENCE",
+        "KIDNAPPING - ENTICING OR ATTEMPTED"
+      ) ~ "Violent Crimes",
+      
+      # Burglary
+      OFFENSE_DESCRIPTION %in% c(
+        "BURGLARY - COMMERICAL - NO FORCE",
+        "BURGLARY - COMMERICAL - FORCE",
+        "BURGLARY - RESIDENTIAL",
+        "BURGLARY - OTHER - FORCE",
+        "BURGLARY - OTHER - ATTEMPT",
+        "BURGLARY - OTHER - NO FORCE",
+        "BURGLARY - COMMERICAL - ATTEMPT",
+        "BURGLARY - RESIDENTIAL - ATTEMPT",
+        "BURGLARY - RESIDENTIAL - NO FORCE",
+        "BURGLARY - RESIDENTIAL - FORCE",
+        "BREAKING AND ENTERING (B&E) MOTOR VEHICLE",
+        "HOME INVASION",
+        "ROBBERY - BANK",
+        "ROBBERY - CAR JACKING",
+        "ROBBERY ATTEMPT - KNIFE - BANK",
+        "ROBBERY - UNARMED - STREET",
+        "ROBBERY"
+      ) ~ "Burglary",
+      
+      # Larceny 
+      OFFENSE_DESCRIPTION %in% c(
+        "LARCENY THEFT FROM BUILDING",
+        "LARCENY THEFT OF MV PARTS & ACCESSORIES",
+        "LARCENY THEFT FROM MV - NON-ACCESSORY",
+        "LARCENY SHOPLIFTING",
+        "LARCENY THEFT OF BICYCLE",
+        "LARCENY PICK-POCKET",
+        "LARCENY PURSE SNATCH - NO FORCE",
+        "LARCENY NON-ACCESSORY FROM VEH. $50 TO $199",
+        "LARCENY IN A BUILDING $50 TO $199",
+        "LARCENY SHOPLIFTING UNDER $50",
+        "LARCENY IN A BUILDING UNDER $50",
+        "LARCENY THEFT FROM COIN-OP MACHINE",
+        "LARCENY IN A BUILDING $200 & OVER",
+        "LARCENY SHOPLIFTING $200 & OVER",
+        "LARCENY BICYCLE $200 & OVER",
+        "LARCENY OTHER $200 & OVER"
+      ) ~ "Larceny",
+      
+      # Drug Offenses
+      OFFENSE_DESCRIPTION %in% c(
+        "DRUGS - OTHER",
+        "DRUGS - SICK ASSIST - HEROIN",
+        "DRUGS - POSS CLASS A - HEROIN, ETC.",
+        "DRUGS - POSS CLASS A - INTENT TO MFR DIST DISP",
+        "DRUGS - SALE / MANUFACTURING",
+        "DRUGS - POSS CLASS D - INTENT TO MFR DIST DISP",
+        "DRUGS - POSS CLASS B - INTENT TO MFR DIST DISP",
+        "DRUGS - SICK ASSIST - OTHER NARCOTIC",
+        "DRUGS - CLASS B TRAFFICKING OVER 18 GRAMS",
+        "DRUGS - CLASS A TRAFFICKING OVER 18 GRAMS",
+        "DRUGS - SICK ASSIST - OTHER HARMFUL DRUG",
+        "DRUGS - POSS CLASS E",
+        "DRUGS - POSS CLASS D",
+        "DRUGS - POSS CLASS C",
+        "DRUGS - POSS CLASS C - INTENT TO MFR DIST DISP",
+        "DRUGS - CONSP TO VIOL CONTROLLED SUBSTANCE",
+        "DRUGS - POSSESSION OF DRUG PARAPHANALIA",
+        "DRUGS - CLASS D TRAFFICKING OVER 50 GRAMS",
+        "DRUGS - POSS CLASS E - INTENT TO MFR DIST DISP",
+        "DRUGS - POSSESSION/ SALE/ MANUFACTURING/ USE",
+        "DRUGS - GLUE INHALATION",
+        "DRUGS - POSS CLASS E INTENT TO MF DIST DISP",
+        "DRUGS - POSSESSION"
+      ) ~ "Drug Offenses",
+      
+      # Sex Offenses
+      OFFENSE_DESCRIPTION %in% c(
+        "SEX OFFENSE - RAPE - FORCIBLE",
+        "SEX OFFENSE - RAPE -  OTHER",
+        "SEX OFFENSE - RAPE - SODOMY",
+        "Fondling - Indecent Assault",
+        "SEXUAL ASSAULT KIT COLLECTED"
+      ) ~ "Sex Offenses",
+  
+      # all other
+      TRUE ~ "Other"
+    )
+  )
+
+df %>% count(crime_category, sort = TRUE)
+```
+
+
+
+```{r}
+# filter data
+df_filtered <- df %>% filter(crime_category != "Other")
+
+
+# plot all crimes except other
+m <- leaflet(data = df_filtered) %>% 
+  addTiles() %>% 
+  setView(lng = -71.0589, lat = 42.3601, zoom = 12) %>% 
+  addCircleMarkers(
+    lng = ~Long, 
+    lat = ~Lat,
+    radius = 3,           
+    fillOpacity = 0.7,
+    popup = ~paste("<b>Crime:</b>", OFFENSE_DESCRIPTION, "<br>",
+                   "<b>Category:</b>", crime_category)
+  )
+
+#m
+```
+
+
+
+```{r}
+# create time bins
+df_time_binned <- df %>%
+  mutate(
+    time_of_day = case_when(
+      HOUR >= 5 & HOUR < 12  ~ "Morning",   # 5–11
+      HOUR >= 12 & HOUR < 17 ~ "Midday",    # 12–16
+      HOUR >= 17 & HOUR < 21 ~ "Afternoon", # 17–20
+      TRUE                   ~ "Night"      # 21–4
+    )
+  )
+
+# summarize
+time_counts <- df_time_binned %>% group_by(time_of_day, crime_category) %>% summarize(count = n(), .groups = "drop")
+
+# plot binned data
+ggplot(time_counts, aes(x = time_of_day, y = count, fill = time_of_day)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~ crime_category, scales = "free_y") +
+  labs(
+    title = "Crimes by Time of Day and Category",
+    x = "Time of Day",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal()
+
+# summarize by DAY_OF_WEEK and crime_category
+dow_counts <- df %>% group_by(DAY_OF_WEEK, crime_category) %>% summarize(count = n(), .groups = "drop")
+
+# ordering days
+dow_counts$DAY_OF_WEEK <- factor(dow_counts$DAY_OF_WEEK,
+  levels = c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
+  )
+
+# plot by day of week
+ggplot(dow_counts, aes(x = DAY_OF_WEEK, y = count, fill = DAY_OF_WEEK)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~ crime_category, scales = "free_y") +
+  labs(
+    title = "Crimes by Day of Week and Category",
+    x = "Day of Week",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal() +
+
+# summarize by MONTH and crime_category
+month_counts <- df %>% group_by(MONTH, crime_category) %>% summarize(count = n(), .groups = "drop")
+
+# convert to factor
+month_counts$MONTH <- factor(month_counts$MONTH, levels = 1:12)
+
+# plot by month
+ggplot(month_counts, aes(x = MONTH, y = count, fill = MONTH)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~ crime_category, scales = "free_y") +
+  labs(
+    title = "Crimes by Month and Category",
+    x = "Month",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal()
+
+# summarize crimes by YEAR and crime_category
+year_counts <- df %>% group_by(YEAR, crime_category) %>% summarize(count = n(), .groups = "drop")
+
+# plot by year
+ggplot(year_counts, aes(x = YEAR, y = count, fill = as.factor(YEAR))) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  facet_wrap(~ crime_category, scales = "free_y") +
+  labs(
+    title = "Crimes per Year by Category",
+    x = "Year",
+    y = "Count of Crimes"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+# plot crimes by category
+district_to_neighborhood <- tibble::tribble(
+  ~DISTRICT, ~neighborhood,
+  "A1",      "Downtown",
+  "A15",     "Charlestown",
+  "B2",      "Roxbury",
+  "B3",      "Mattapan",
+  "C6",      "South Boston",
+  "C11",     "Dorchester", 
+  "D4",      "South End",
+  "D14",     "Brighton",
+  "E13",     "Jamaica Plain",
+  "E18",     "Hyde Park",
+  "E5",      "West Roxbury",
+  "A7",      "East Boston"
+)
+
+# get boundaries and project data
+boston_neighborhoods <- st_read("boston_neighborhood_boundaries_approximated_by_2020_census_tracts.json")
+boston_neighborhoods <- st_transform(boston_neighborhoods, crs = 4326)
+
+# unique categories
+crime_categories_list <- unique(df$crime_category)
+
+# loop through
+for(cat in crime_categories_list) {
+  
+  # filter
+  df_cat <- df %>% filter(crime_category == cat)
+  
+  # count crimes per district
+  df_counts <- df_cat %>% group_by(DISTRICT) %>% summarize(crime_count = n(), .groups = "drop") %>% mutate(DISTRICT = as.character(DISTRICT))
+  
+  # attach names
+  df_counts2 <- left_join(district_to_neighborhood, df_counts, by = "DISTRICT")
+  
+  # merge
+  boston_map_data <- left_join(boston_neighborhoods, df_counts2, by = "neighborhood")
+  
+  # replace NA
+  boston_map_data$crime_count[is.na(boston_map_data$crime_count)] <- 0
+  
+  # color for plotting
+  pal <- colorNumeric(palette = "Blues", domain = boston_map_data$crime_count)
+  
+  # centroids for labeling
+  centroids <- boston_map_data %>% st_centroid() %>% mutate(lng = st_coordinates(.)[,1], lat = st_coordinates(.)[,2]) 
+  
+  # map
+  m <- leaflet(boston_map_data) %>%
+    addTiles() %>%
+    setView(lng = -71.0589, lat = 42.3601, zoom = 12) %>%
+    # crime per district
+    addPolygons(
+      fillColor = ~pal(crime_count),
+      color = "black",
+      weight = 1,
+      fillOpacity = 0.7,
+      popup = ~paste0("<strong>", DISTRICT, "</strong><br/>", "Crimes: ", crime_count)
+    ) %>%
+    # legend
+    addLegend(
+      position = "bottomright",
+      pal = pal,
+      values = ~crime_count,
+      title = paste("Crime Rate (", cat, ")", sep = ""),
+      opacity = 0.7
+    ) %>%
+    # districts
+    addLabelOnlyMarkers(
+      data = centroids,
+      lng = ~lng,
+      lat = ~lat,
+      label = ~DISTRICT,
+      labelOptions = labelOptions(
+        noHide = TRUE,
+        direction = "center",
+        textOnly = TRUE,
+        style = list("color" = "black", "font-weight" = "bold", "font-size" = "12px")
+      )
+    )
+  
+  # print map 
+  print(m)
+}
+```
+
+
+### Clustering Approaches
+
+#### DBSCAN
+
+
+```{r}
+# convert to sf object and project
+df_sf <- df %>% st_as_sf(coords = c("Long", "Lat"), crs = 4326) %>% st_transform(crs = 26986)
+
+# filter
+df_cat <- df_sf %>% filter(crime_category == "Violent Crimes")
+
+# get coordinates
+coords <- st_coordinates(df_cat)
+
+# minPts to test
+minpts_vals <- c(5, 10, 15, 20)
+
+# loop over
+for(minpts in minpts_vals) {
+  # KNN distance plot
+  distances <- kNNdist(coords, k = minpts)  
+  plot(
+    sort(distances),
+    type = "l",
+    main = paste("kNN Distance Plot, k =", minpts),
+    xlab = "Points",
+    ylab = paste(minpts, "-NN Distance"),
+    ylim = c(0, 500) 
+  )
+  abline(h = 100, col = "red", lty = 2)                                         # reference line of 100 minPts
+}
+```
+
+
+```{r}
+# define eps vals according to KNN
+minpts_vals <- c(5, 10, 15, 20)
+eps_vals <- c(100, 150, 200, 250, 300, 350)
+
+# loop over
+for(minpts in minpts_vals){
+  for(eps_val in eps_vals){
+    
+    # DBSCAN
+    dbscan_result <- dbscan(coords, eps = eps_val, minPts = minpts)
+    
+    # attach result
+    df_cat$cluster <- factor(dbscan_result$cluster)
+    
+    # reproject for plotting
+    df_cat_latlon <- st_transform(df_cat, crs = 4326) %>%  mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+    
+    # removenoise
+    df_no_noise <- df_cat_latlon %>% filter(cluster != 0)
+    
+    # plot
+    plot_title <- paste("Violent Crimes Hotspots (minPts =", minpts, ", eps =", eps_val, ")")
+    p <- ggplot(df_no_noise, aes(x = Long, y = Lat, color = cluster)) +
+      geom_point(alpha = 0.7) +
+      coord_fixed() +
+      labs(
+        title = plot_title,
+        x = "Longitude",
+        y = "Latitude",
+        color = "Cluster"
+      ) +
+      theme_minimal()
+    print(p)
+  }
+}
+```
+
+
+
+#### HDBSCAN
+
+##### Violent crimes
+
+```{r}
+# filter for category
+df_category <- df_sf %>% filter(crime_category == "Violent Crimes")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# loop over minPts
+minpoints <- c(100,110,120,130,140,150,160)
+for (pt in minpoints) {
+  
+  # HDBSCAN
+  hdbscan_result <- hdbscan(coords, minPts = pt)
+  
+  # DBCV
+  dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+  dbcv_val <- dbcv_result$score
+  
+  # attach result
+  df_clustered <- df_category
+  df_clustered$cluster <- factor(hdbscan_result$cluster)
+  
+  # reproject for plotting
+  df_clustered_4326 <- st_transform(df_clustered, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+  
+  # plot with noise
+  plot_title_all <- paste("Violent Crimes With Noise, minPts =", pt, ", DBCV =", round(dbcv_val, 3))
+  p_all <- ggplot(df_clustered_4326, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_all,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_all)
+  
+  # plot without noise
+  df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+  plot_title_no_noise <- paste("Violent Crimes Without Noise, minPts =", pt,", DBCV =", round(dbcv_val, 3))
+  p_no_noise <- ggplot(df_no_noise, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_no_noise,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_no_noise)
+}
+```
+
+
+```{r}
+# plot the best result from above 
+df_category <- df_sf %>% filter(crime_category == "Violent Crimes")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# HDBSCAN and DBCV
+hdbscan_result <- hdbscan(coords, minPts = 100)
+dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+dbcv_val <- dbcv_result$score
+
+# attach result
+df_category$cluster <- factor(hdbscan_result$cluster)
+
+# reproject for plotting
+df_clustered_4326 <- st_transform(df_category, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+
+# remove noise
+df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+
+# get the neighborhoods 
+boston_neighborhoods <- st_read("boston_neighborhood_boundaries_approximated_by_2020_census_tracts.json") %>% st_transform(crs = 4326)
+
+# merge 
+boston_map_data <- left_join(boston_neighborhoods, district_to_neighborhood, by = "neighborhood")
+
+
+# centroids for labelling
+centroids <- boston_map_data %>% st_centroid() %>% mutate(lng = st_coordinates(.)[,1], lat = st_coordinates(.)[,2])
+
+# color for plotting
+pal_cluster <- colorFactor(
+  palette = "Set1",
+  domain = df_no_noise$cluster
+)
+
+# create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -71.0589, lat = 42.3601, zoom = 10) %>%
+  # districts
+  addPolygons(
+    data = boston_map_data,
+    fillColor = "lightgray",
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.4,
+    popup = ~paste("District:", DISTRICT)
+  ) %>%
+  # clusters
+  addCircleMarkers(
+    data = df_no_noise,
+    lng = ~Long,
+    lat = ~Lat,
+    radius = 3,
+    color = ~pal_cluster(cluster),
+    fillOpacity = 0.7,
+    popup = ~paste0("<b>Crime:</b> ", OFFENSE_DESCRIPTION, "<br>",
+                     "<b>Cluster:</b> ", cluster)
+  ) %>%
+  # labels
+  addLabelOnlyMarkers(
+    data = centroids,
+    lng = ~lng,
+    lat = ~lat,
+    label = ~DISTRICT,
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      direction = "center",
+      textOnly = TRUE,
+      style = list("color" = "black", "font-weight" = "bold", "font-size" = "12px")
+    )
+  )
+
+map
+
+```
+
+
+### Larceny
+
+
+```{r}
+# filter for category
+df_category <- df_sf %>% filter(crime_category == "Larceny")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# loop over minPts
+minpoints <- c(100,110,120,130,140,150,160)
+for (pt in minpoints) {
+  
+  # HDBSCAN
+  hdbscan_result <- hdbscan(coords, minPts = pt)
+  
+  # DBCV
+  dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+  dbcv_val <- dbcv_result$score
+  
+  # attach result
+  df_clustered <- df_category
+  df_clustered$cluster <- factor(hdbscan_result$cluster)
+  
+  # reproject for plotting
+  df_clustered_4326 <- st_transform(df_clustered, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+  
+  # plot with noise
+  plot_title_all <- paste("Violent Crimes With Noise, minPts =", pt, ", DBCV =", round(dbcv_val, 3))
+  p_all <- ggplot(df_clustered_4326, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_all,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_all)
+  
+  # plot without noise
+  df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+  plot_title_no_noise <- paste("Violent Crimes Without Noise, minPts =", pt,", DBCV =", round(dbcv_val, 3))
+  p_no_noise <- ggplot(df_no_noise, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_no_noise,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_no_noise)
+}
+```
+
+
+```{r}
+# plot the best result from above 
+df_category <- df_sf %>% filter(crime_category == "Larceny")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# HDBSCAN and DBCV
+hdbscan_result <- hdbscan(coords, minPts = 100)
+dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+dbcv_val <- dbcv_result$score
+
+# attach result
+df_category$cluster <- factor(hdbscan_result$cluster)
+
+# reproject for plotting
+df_clustered_4326 <- st_transform(df_category, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+
+# remove noise
+df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+
+# get the neighborhoods 
+boston_neighborhoods <- st_read("boston_neighborhood_boundaries_approximated_by_2020_census_tracts.json") %>% st_transform(crs = 4326)
+
+# merge 
+boston_map_data <- left_join(boston_neighborhoods, district_to_neighborhood, by = "neighborhood")
+
+
+# centroids for labelling
+centroids <- boston_map_data %>% st_centroid() %>% mutate(lng = st_coordinates(.)[,1], lat = st_coordinates(.)[,2])
+
+# color for plotting
+pal_cluster <- colorFactor(
+  palette = "Set1",
+  domain = df_no_noise$cluster
+)
+
+# create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -71.0589, lat = 42.3601, zoom = 10) %>%
+  # districts
+  addPolygons(
+    data = boston_map_data,
+    fillColor = "lightgray",
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.4,
+    popup = ~paste("District:", DISTRICT)
+  ) %>%
+  # clusters
+  addCircleMarkers(
+    data = df_no_noise,
+    lng = ~Long,
+    lat = ~Lat,
+    radius = 3,
+    color = ~pal_cluster(cluster),
+    fillOpacity = 0.7,
+    popup = ~paste0("<b>Crime:</b> ", OFFENSE_DESCRIPTION, "<br>",
+                     "<b>Cluster:</b> ", cluster)
+  ) %>%
+  # labels
+  addLabelOnlyMarkers(
+    data = centroids,
+    lng = ~lng,
+    lat = ~lat,
+    label = ~DISTRICT,
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      direction = "center",
+      textOnly = TRUE,
+      style = list("color" = "black", "font-weight" = "bold", "font-size" = "12px")
+    )
+  )
+
+map
+
+```
+
+
+### Drug Offenses
+
+
+
+```{r}
+# filter for category
+df_category <- df_sf %>% filter(crime_category == "Drug Offenses")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# loop over minPts
+minpoints <- c(18,19,20,21)
+for (pt in minpoints) {
+  
+  # HDBSCAN
+  hdbscan_result <- hdbscan(coords, minPts = pt)
+  
+  # DBCV
+  dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+  dbcv_val <- dbcv_result$score
+  
+  # attach result
+  df_clustered <- df_category
+  df_clustered$cluster <- factor(hdbscan_result$cluster)
+  
+  # reproject for plotting
+  df_clustered_4326 <- st_transform(df_clustered, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+  
+  # plot with noise
+  plot_title_all <- paste("Violent Crimes With Noise, minPts =", pt, ", DBCV =", round(dbcv_val, 3))
+  p_all <- ggplot(df_clustered_4326, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_all,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_all)
+  
+  # plot without noise
+  df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+  plot_title_no_noise <- paste("Violent Crimes Without Noise, minPts =", pt,", DBCV =", round(dbcv_val, 3))
+  p_no_noise <- ggplot(df_no_noise, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_no_noise,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_no_noise)
+}
+```
+
+
+```{r}
+# plot the best result from above 
+df_category <- df_sf %>% filter(crime_category == "Drug Offenses")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# HDBSCAN and DBCV
+hdbscan_result <- hdbscan(coords, minPts = 19)
+dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+dbcv_val <- dbcv_result$score
+
+# attach result
+df_category$cluster <- factor(hdbscan_result$cluster)
+
+# reproject for plotting
+df_clustered_4326 <- st_transform(df_category, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+
+# remove noise
+df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+
+# get the neighborhoods 
+boston_neighborhoods <- st_read("boston_neighborhood_boundaries_approximated_by_2020_census_tracts.json") %>% st_transform(crs = 4326)
+
+# merge 
+boston_map_data <- left_join(boston_neighborhoods, district_to_neighborhood, by = "neighborhood")
+
+
+# centroids for labelling
+centroids <- boston_map_data %>% st_centroid() %>% mutate(lng = st_coordinates(.)[,1], lat = st_coordinates(.)[,2])
+
+# color for plotting
+pal_cluster <- colorFactor(
+  palette = "Set1",
+  domain = df_no_noise$cluster
+)
+
+# create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -71.0589, lat = 42.3601, zoom = 10) %>%
+  # districts
+  addPolygons(
+    data = boston_map_data,
+    fillColor = "lightgray",
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.4,
+    popup = ~paste("District:", DISTRICT)
+  ) %>%
+  # clusters
+  addCircleMarkers(
+    data = df_no_noise,
+    lng = ~Long,
+    lat = ~Lat,
+    radius = 3,
+    color = ~pal_cluster(cluster),
+    fillOpacity = 0.7,
+    popup = ~paste0("<b>Crime:</b> ", OFFENSE_DESCRIPTION, "<br>",
+                     "<b>Cluster:</b> ", cluster)
+  ) %>%
+  # labels
+  addLabelOnlyMarkers(
+    data = centroids,
+    lng = ~lng,
+    lat = ~lat,
+    label = ~DISTRICT,
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      direction = "center",
+      textOnly = TRUE,
+      style = list("color" = "black", "font-weight" = "bold", "font-size" = "12px")
+    )
+  )
+
+map
+
+```
+
+
+
+### Burglary
+
+
+```{r}
+# filter for category
+df_category <- df_sf %>% filter(crime_category == "Burglary")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# loop over minPts
+minpoints <- c(18,19,20,21,22)
+for (pt in minpoints) {
+  
+  # HDBSCAN
+  hdbscan_result <- hdbscan(coords, minPts = pt)
+  
+  # DBCV
+  dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+  dbcv_val <- dbcv_result$score
+  
+  # attach result
+  df_clustered <- df_category
+  df_clustered$cluster <- factor(hdbscan_result$cluster)
+  
+  # reproject for plotting
+  df_clustered_4326 <- st_transform(df_clustered, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+  
+  # plot with noise
+  plot_title_all <- paste("Violent Crimes With Noise, minPts =", pt, ", DBCV =", round(dbcv_val, 3))
+  p_all <- ggplot(df_clustered_4326, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_all,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_all)
+  
+  # plot without noise
+  df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+  plot_title_no_noise <- paste("Violent Crimes Without Noise, minPts =", pt,", DBCV =", round(dbcv_val, 3))
+  p_no_noise <- ggplot(df_no_noise, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_no_noise,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_no_noise)
+}
+```
+
+
+```{r}
+# plot the best result from above 
+df_category <- df_sf %>% filter(crime_category == "Burglary")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# HDBSCAN and DBCV
+hdbscan_result <- hdbscan(coords, minPts = 18)
+dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+dbcv_val <- dbcv_result$score
+
+# attach result
+df_category$cluster <- factor(hdbscan_result$cluster)
+
+# reproject for plotting
+df_clustered_4326 <- st_transform(df_category, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+
+# remove noise
+df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+
+# get the neighborhoods 
+boston_neighborhoods <- st_read("boston_neighborhood_boundaries_approximated_by_2020_census_tracts.json") %>% st_transform(crs = 4326)
+
+# merge 
+boston_map_data <- left_join(boston_neighborhoods, district_to_neighborhood, by = "neighborhood")
+
+
+# centroids for labelling
+centroids <- boston_map_data %>% st_centroid() %>% mutate(lng = st_coordinates(.)[,1], lat = st_coordinates(.)[,2])
+
+# color for plotting
+pal_cluster <- colorFactor(
+  palette = "Set1",
+  domain = df_no_noise$cluster
+)
+
+# create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -71.0589, lat = 42.3601, zoom = 10) %>%
+  # districts
+  addPolygons(
+    data = boston_map_data,
+    fillColor = "lightgray",
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.4,
+    popup = ~paste("District:", DISTRICT)
+  ) %>%
+  # clusters
+  addCircleMarkers(
+    data = df_no_noise,
+    lng = ~Long,
+    lat = ~Lat,
+    radius = 3,
+    color = ~pal_cluster(cluster),
+    fillOpacity = 0.7,
+    popup = ~paste0("<b>Crime:</b> ", OFFENSE_DESCRIPTION, "<br>",
+                     "<b>Cluster:</b> ", cluster)
+  ) %>%
+  # labels
+  addLabelOnlyMarkers(
+    data = centroids,
+    lng = ~lng,
+    lat = ~lat,
+    label = ~DISTRICT,
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      direction = "center",
+      textOnly = TRUE,
+      style = list("color" = "black", "font-weight" = "bold", "font-size" = "12px")
+    )
+  )
+
+map
+
+```
+
+
+### Sex Offenses
+
+
+```{r}
+# filter for category
+df_category <- df_sf %>% filter(crime_category == "Sex Offenses")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# loop over minPts
+minpoints <- c(5,7,9,11)
+for (pt in minpoints) {
+  
+  # HDBSCAN
+  hdbscan_result <- hdbscan(coords, minPts = pt)
+  
+  # DBCV
+  dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+  dbcv_val <- dbcv_result$score
+  
+  # attach result
+  df_clustered <- df_category
+  df_clustered$cluster <- factor(hdbscan_result$cluster)
+  
+  # reproject for plotting
+  df_clustered_4326 <- st_transform(df_clustered, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+  
+  # plot with noise
+  plot_title_all <- paste("Violent Crimes With Noise, minPts =", pt, ", DBCV =", round(dbcv_val, 3))
+  p_all <- ggplot(df_clustered_4326, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_all,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_all)
+  
+  # plot without noise
+  df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+  plot_title_no_noise <- paste("Violent Crimes Without Noise, minPts =", pt,", DBCV =", round(dbcv_val, 3))
+  p_no_noise <- ggplot(df_no_noise, aes(x = Long, y = Lat, color = cluster)) +
+    geom_point(alpha = 0.7) +
+    coord_fixed() +
+    labs(
+      title = plot_title_no_noise,
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cluster"
+    ) +
+    theme_minimal()
+  
+  print(p_no_noise)
+}
+```
+
+
+```{r}
+# plot the best result from above 
+df_category <- df_sf %>% filter(crime_category == "Sex Offenses")
+
+# get coordinates
+coords <- st_coordinates(df_category)
+
+# HDBSCAN and DBCV
+hdbscan_result <- hdbscan(coords, minPts = 11)
+dbcv_result <- dbcv(coords, hdbscan_result$cluster, d = 2)
+dbcv_val <- dbcv_result$score
+
+# attach result
+df_category$cluster <- factor(hdbscan_result$cluster)
+
+# reproject for plotting
+df_clustered_4326 <- st_transform(df_category, crs = 4326) %>% mutate(Long = st_coordinates(.)[,1], Lat  = st_coordinates(.)[,2])
+
+# remove noise
+df_no_noise <- df_clustered_4326 %>% filter(cluster != 0)
+
+# get the neighborhoods 
+boston_neighborhoods <- st_read("boston_neighborhood_boundaries_approximated_by_2020_census_tracts.json") %>% st_transform(crs = 4326)
+
+# merge 
+boston_map_data <- left_join(boston_neighborhoods, district_to_neighborhood, by = "neighborhood")
+
+# centroids for labeling
+centroids <- boston_map_data %>% st_centroid() %>% mutate(lng = st_coordinates(.)[,1], lat = st_coordinates(.)[,2])
+
+# color for plotting
+pal_cluster <- colorFactor(
+  palette = "Set1",
+  domain = df_no_noise$cluster
+)
+
+# create map
+map <- leaflet() %>%
+  addTiles() %>%
+  setView(lng = -71.0589, lat = 42.3601, zoom = 10) %>%
+  # districts
+  addPolygons(
+    data = boston_map_data,
+    fillColor = "lightgray",
+    color = "black",
+    weight = 1,
+    fillOpacity = 0.4,
+    popup = ~paste("District:", DISTRICT)
+  ) %>%
+  # clusters
+  addCircleMarkers(
+    data = df_no_noise,
+    lng = ~Long,
+    lat = ~Lat,
+    radius = 3,
+    color = ~pal_cluster(cluster),
+    fillOpacity = 0.7,
+    popup = ~paste0("<b>Crime:</b> ", OFFENSE_DESCRIPTION, "<br>",
+                     "<b>Cluster:</b> ", cluster)
+  ) %>%
+  # labels
+  addLabelOnlyMarkers(
+    data = centroids,
+    lng = ~lng,
+    lat = ~lat,
+    label = ~DISTRICT,
+    labelOptions = labelOptions(
+      noHide = TRUE,
+      direction = "center",
+      textOnly = TRUE,
+      style = list("color" = "black", "font-weight" = "bold", "font-size" = "12px")
+    )
+  )
+
+map
+
+```
+
+
+### Spatial Methods
+
+
+##### Local Moran
+
+```{r}
+# cell sizes to test
+cell_sizes <- c(100,250,500,750,1000)
+
+for (cellsize in cell_sizes){
+  
+  # project data
+  boston_neighborhoods <- st_transform(boston_neighborhoods, crs = 26986)
+  
+  # create grid
+  grid <- st_make_grid(boston_neighborhoods, cellsize = cellsize, square = TRUE)
+  grid_sf <- st_sf(grid_id = seq_along(grid), geometry = grid)
+  grid_sf <- st_transform(grid_sf, crs = 26986)
+  
+  # filter crime categories
+  crime_categories <- unique(df$crime_category)
+  crime_categories <- crime_categories[crime_categories != "Other"]
+  
+  # loop through categories
+  for(cat in crime_categories) {
+    
+    # filter
+    df_cat <- df %>% filter(crime_category == cat)
+  
+    # convert to sf object and project
+    df_cat_sf <- st_as_sf(df_cat, coords = c("Long", "Lat"), crs = 4326) %>% st_transform(crs = 26986)
+    crime_points <- df_cat_sf
+    
+    # compute number of crimes per cell
+    grid_counts <- st_join(grid_sf, crime_points, join = st_contains) %>% group_by(grid_id) %>% 
+      summarize(crime_count = n(), .groups = "drop")
+    grid_counts_df <- st_drop_geometry(grid_counts)
+    grid_sf_cat <- left_join(grid_sf, grid_counts_df, by = "grid_id")
+    grid_sf_cat$crime_count[is.na(grid_sf_cat$crime_count)] <- 0
+    
+    # Local Moran's I Statistic
+    grid_sp <- as(grid_sf_cat, "Spatial")                                       # convert to a Spatial object
+    nb <- poly2nb(grid_sp, queen = TRUE)                                        # creates neihbours based on queens rule
+    lw <- nb2listw(nb, style = "W", zero.policy = TRUE)                         # row standardized weights
+    grid_sp@data$crime_count <- as.numeric(grid_sp@data$crime_count)            # make numeric column
+    
+    if(all(grid_sp@data$crime_count == 0)) {
+      localMoran_values <- matrix(0, nrow = nrow(grid_sp@data), ncol = 5)
+      colnames(localMoran_values) <- c("Ii", "E.Ii", "Var.Ii", "Z.Ii", "Pr(z > 0)")
+    } else {
+      localMoran_values <- localmoran(grid_sp@data$crime_count, lw, zero.policy = TRUE)
+    }
+    
+    # Z-value
+    grid_sf_cat$localMoran <- as.numeric(localMoran_values[, "Z.Ii"])
+    
+    # define cluster threshold and find cells
+    threshold <- 1.96  
+    detected_cells <- grid_sf_cat %>% filter(localMoran >= threshold)
+    
+    if(nrow(detected_cells) > 0) {
+      detected_cluster <- st_union(detected_cells)  
+    } else {
+      detected_cluster <- NULL
+    }
+    
+    # hitrate
+    N_total <- nrow(crime_points)
+    if(!is.null(detected_cluster)) {
+      inside_logical <- st_intersects(crime_points, detected_cluster, sparse = FALSE)[,1]
+      n_inside <- sum(inside_logical)
+      HitRate <- n_inside / N_total
+    } else {
+      n_inside <- 0
+      HitRate <- 0
+    }
+    
+    # arearatio
+    if(!is.null(detected_cluster)) {
+      detected_area <- as.numeric(st_area(detected_cluster))
+    } else {
+      detected_area <- 0
+    }
+    study_area_union <- st_union(boston_neighborhoods)
+    study_area_area <- as.numeric(st_area(study_area_union))
+    AreaRatio <- detected_area / study_area_area
+    
+    # PAI
+    if(AreaRatio > 0) {
+      PAI <- HitRate / AreaRatio}
+    else{
+      PAI <- NA
+    } 
+    
+    # DCR
+    if(detected_area > 0 && (study_area_area - detected_area) > 0) {
+      top <- (n_inside / detected_area)
+      bot <- ((N_total - n_inside) / (study_area_area - detected_area))
+      DCR <- top / bot
+    } else {
+      DCR <- NA
+    }
+    
+    # SSI
+    if(!is.null(detected_cluster) && detected_area > 0) {
+      perimeter <- as.numeric(st_length(st_boundary(detected_cluster)))
+      if(perimeter < 1e-6) {
+        SSI <- NA
+        cat("Perimeter too small for category", cat, "- SSI_shape set to NA.\n")
+      } else {
+        SSI <- 1 - (2 * sqrt(pi * detected_area)) / perimeter
+      }
+    } else {
+      SSI <- NA
+    }
+    
+    # print
+    cat("Category:", cat, "\n")
+    cat("HitRate:", HitRate, "\n")
+    cat("AreaRatio:", AreaRatio, "\n")
+    cat("PAI:", PAI, "\n")
+    cat("DCR:", DCR, "\n")
+    cat("SSI:", SSI, "\n")
+    
+    
+    # plot a map, transforming back
+    grid_sf_map <- st_transform(grid_sf_cat, crs = 4326)
+    if(!is.null(detected_cluster)) {
+      detected_cluster_map <- st_transform(detected_cluster, crs = 4326)
+    }
+    boston_neighborhoods_map <- st_transform(boston_neighborhoods, crs = 4326)
+    
+    # create map
+    if(!is.null(detected_cluster)) {
+      m <- leaflet() %>%
+        addTiles() %>%
+        # add clusters
+        addPolygons(
+          data = detected_cluster_map,
+          fillColor = "red",
+          fillOpacity = 0.5,
+          color = "black",
+          weight = 2,
+          popup = paste("Significant cluster for", cat)
+        ) %>%
+        # district boundaries
+        addPolygons(
+          data = boston_neighborhoods_map,
+          fill = FALSE,
+          color = "blue",
+          weight = 1,
+          popup = ~paste("District:", neighborhood)
+        ) %>%
+        addLegend(
+          position = "bottomright",
+          colors = "red",
+          labels = paste("Significant Cluster for", cat),
+          title = paste("Local Moran's I (≥", threshold, ")")
+        )
+      print(m)
+    } else {
+      cat("No significant cluster found for category", cat, "\n")
+    }
+  }
+}
+```
+
+### Local Getis-Ord
+
+```{r}
+# cell sizes to test
+cell_sizes <- c(100,250,500,750,1000)
+
+for (cellsize in cell_sizes){
+  
+  # project data
+  boston_neighborhoods <- st_transform(boston_neighborhoods, crs = 26986)
+  
+  # create grid
+  grid <- st_make_grid(boston_neighborhoods, cellsize = cellsize, square = TRUE)
+  grid_sf <- st_sf(grid_id = seq_along(grid), geometry = grid)
+  grid_sf <- st_transform(grid_sf, crs = 26986)
+  
+  # filter crime categories
+  crime_categories <- unique(df$crime_category)
+  crime_categories <- crime_categories[crime_categories != "Other"]
+  
+  # loop through categories
+  for(cat in crime_categories) {
+  
+    # filter
+    df_cat <- df %>% filter(crime_category == cat)
+  
+    # convert to sf object and project
+    df_cat_sf <- st_as_sf(df_cat, coords = c("Long", "Lat"), crs = 4326) %>% st_transform(crs = 26986)
+    crime_points <- df_cat_sf
+    
+    # compute number of crimes per cell
+    grid_counts <- st_join(grid_sf, crime_points, join = st_contains) %>% group_by(grid_id) %>% 
+      summarize(crime_count = n(), .groups = "drop")
+    grid_counts_df <- st_drop_geometry(grid_counts)
+    grid_sf_cat <- left_join(grid_sf, grid_counts_df, by = "grid_id")
+    grid_sf_cat$crime_count[is.na(grid_sf_cat$crime_count)] <- 0
+    
+    # Local Getis–Ord G* Statistic                          
+    grid_sp <- as(grid_sf_cat, "Spatial")                                       # convert to a Spatial object
+    nb <- poly2nb(grid_sp, queen = TRUE)                                        # creates neihbours based on queens rule
+    lw <- nb2listw(nb, style = "W", zero.policy = TRUE)                         # row standardized weights
+    grid_sp@data$crime_count <- as.numeric(grid_sp@data$crime_count)            # make numeric column
+    
+    if(all(grid_sp@data$crime_count == 0)) {
+      localG_values <- rep(0, nrow(grid_sp@data))
+    } else {
+      localG_values <- localG(grid_sp@data$crime_count, lw, zero.policy = TRUE)
+    }
+    grid_sf_cat$localG <- as.numeric(localG_values)
+    
+    # define cluster threshold and find cells
+    threshold <- 1.96  
+    detected_cells <- grid_sf_cat %>% filter(localG >= threshold)
+    
+    if(nrow(detected_cells) > 0) {
+      detected_cluster <- st_union(detected_cells)  
+    } else {
+      detected_cluster <- NULL
+    }
+    
+    # hitrate
+    N_total <- nrow(crime_points)
+    if(!is.null(detected_cluster)) {
+      inside_logical <- st_intersects(crime_points, detected_cluster, sparse = FALSE)[,1]
+      n_inside <- sum(inside_logical)
+      HitRate <- n_inside / N_total
+    } else {
+      n_inside <- 0
+      HitRate <- 0
+    }
+    
+    # arearatio
+    if(!is.null(detected_cluster)) {
+      detected_area <- as.numeric(st_area(detected_cluster))
+    } else {
+      detected_area <- 0
+    }
+    study_area_union <- st_union(boston_neighborhoods)
+    study_area_area <- as.numeric(st_area(study_area_union))
+    AreaRatio <- detected_area / study_area_area
+    
+    # PAI
+    if(AreaRatio > 0) {
+      PAI <- HitRate / AreaRatio}
+    else{
+      PAI <- NA
+    } 
+    
+    # DCR
+    if(detected_area > 0 && (study_area_area - detected_area) > 0) {
+      top <- (n_inside / detected_area)
+      bot <- ((N_total - n_inside) / (study_area_area - detected_area))
+      DCR <- top / bot
+    } else {
+      DCR <- NA
+    }
+    
+    # SSI
+    if(!is.null(detected_cluster) && detected_area > 0) {
+      perimeter <- as.numeric(st_length(st_boundary(detected_cluster)))
+      if(perimeter < 1e-6) {
+        SSI <- NA
+        cat("Perimeter too small for category", cat, "- SSI_shape set to NA.\n")
+      } else {
+        SSI <- 1 - (2 * sqrt(pi * detected_area)) / perimeter
+      }
+    } else {
+      SSI <- NA
+    }
+    
+    # print
+    cat("Category:", cat, "\n")
+    cat("HitRate:", HitRate, "\n")
+    cat("AreaRatio:", AreaRatio, "\n")
+    cat("PAI:", PAI, "\n")
+    cat("DCR:", DCR, "\n")
+    cat("SSI:", SSI, "\n")
+    
+    
+    # plot a map, transforming back
+    grid_sf_map <- st_transform(grid_sf_cat, crs = 4326)
+    if(!is.null(detected_cluster)) {
+      detected_cluster_map <- st_transform(detected_cluster, crs = 4326)
+    }
+    boston_neighborhoods_map <- st_transform(boston_neighborhoods, crs = 4326)
+    
+    # create map
+    if(!is.null(detected_cluster)) {
+      m <- leaflet() %>%
+        addTiles() %>%
+        # add clusters
+        addPolygons(
+          data = detected_cluster_map,
+          fillColor = "red",
+          fillOpacity = 0.5,
+          color = "black",
+          weight = 2,
+          popup = paste("Significant cluster for", cat)
+        ) %>%
+        # district boundaries
+        addPolygons(
+          data = boston_neighborhoods_map,
+          fill = FALSE,
+          color = "blue",
+          weight = 1,
+          popup = ~paste("District:", neighborhood)
+        ) %>%
+        addLegend(
+          position = "bottomright",
+          colors = "red",
+          labels = paste("Significant Cluster for", cat),
+          title = paste("Local Getis-Ord (≥", threshold, ")")
+        )
+      print(m)
+    } else {
+      cat("No significant cluster found for category", cat, "\n")
+    }
+  }
+}
+```
+
+
+
